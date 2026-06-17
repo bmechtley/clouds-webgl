@@ -1,6 +1,6 @@
-import * as THREE from './js/three.module.js';
-import { add_shaders } from './js/shaders.js';
-import { uniforms, guiparams } from './js/parameters.js';
+import * as THREE from 'three';
+import { add_shaders } from './shaders.js';
+import { uniforms, guiparams } from './gui.js';
 
 export default class simulation {
   // Set up the three.js scene.
@@ -14,7 +14,7 @@ export default class simulation {
 
   constructor(canvas, stats) { this.stats = stats; }
 
-  update_mouse(x, y, mouse_index) {
+  update_mouse(x, y, mice, mouse_index) {
     // Get mouse coordinates.
     const dim = uniforms.simulation.dim.value;
     const position = new THREE.Vector2(x / dim.x, 1 - y / dim.y);
@@ -30,32 +30,32 @@ export default class simulation {
 
   start() {
     renderer.autoClearColor = false;
-    add_shaders(shaders, uniforms, renderer, camera);
+    add_shaders(this.shaders, uniforms, renderer, camera);
     this.first_frame = true;
     requestAnimationFrame(this.render.bind(this));
   }
 
   // Initial density and velocity, "constants".
   render_constants() {
-    if (this.first_frame) shaders.black.render(); // Obstacles.
+    if (this.first_frame) this.shaders.black.render(); // Obstacles.
     this.first_frame = false;
 
-    shaders.noise.render(); // Randomize noise every frame.
-    shaders.env_pressure.render(); // Environment updates with parameters.
+    this.shaders.noise.render(); // Randomize noise every frame.
+    this.shaders.env_pressure.render(); // Environment updates with parameters.
   }  
 
   render_mice() {
     // For each mouse, render the additional density and velocity and then
     // copy the texture to set_velocity and set_density for the next.
-    mice.filter(m => m.down).forEach((m, i) => {
+    this.mice.filter(m => m.down).forEach((m, i) => {
       const shader_mouse = 
-        shaders.add_mouse_to_density.uniforms.mouse.value;
+        this.shaders.add_mouse_to_density.uniforms.mouse.value;
       
       const shader_velocity_multiplier = 
-        shaders.add_mouse_to_velocity.uniforms.multiplier.value;
+        this.shaders.add_mouse_to_velocity.uniforms.multiplier.value;
       
       const shader_density_multiplier = 
-        shaders.add_mouse_to_density.uniforms.multiplier.value;
+        this.shaders.add_mouse_to_density.uniforms.multiplier.value;
 
       const velocity_scale = uniforms.external.mouse_velocity.value;
       const density_multiplier = new THREE.Vector4(
@@ -64,7 +64,7 @@ export default class simulation {
         ),
         1
       );
-      const shader_radius = shaders.add_mouse_to_density.uniforms.radius;
+      const shader_radius = this.shaders.add_mouse_to_density.uniforms.radius;
 
       shader_mouse.copy(m.position);
       shader_mouse.z = 1;
@@ -79,32 +79,32 @@ export default class simulation {
       shader_density_multiplier
         .multiplyScalar(velocity_scale * m.velocity.length());
 
-      shaders.add_mouse_to_density.render();
-      shaders.add_mouse_to_velocity.render();
+      this.shaders.add_mouse_to_density.render();
+      this.shaders.add_mouse_to_velocity.render();
 
       if (i == 0) {
-        shaders.set_velocity.bind('source', shaders.add_mouse_to_velocity);
-        shaders.set_density.bind('source', shaders.add_mouse_to_density);
+        this.shaders.set_velocity.bind('source', this.shaders.add_mouse_to_velocity);
+        this.shaders.set_density.bind('source', this.shaders.add_mouse_to_density);
       }
 
-      shaders.set_density.render();
-      shaders.set_velocity.render();
+      this.shaders.set_density.render();
+      this.shaders.set_velocity.render();
     });
   }
 
   render_external_density_and_velocity() {
     this.render_mice();
-    shaders.add_wind.render();
+    this.shaders.add_wind.render();
   }
 
   render_advection() {
-    shaders.advect_density.render();
-    shaders.advect_velocity.render();
+    this.shaders.advect_density.render();
+    this.shaders.advect_velocity.render();
   }
 
   render_viscous_diffusion() {
-    shaders.jacobi_diffusion
-      .bind('velocity_texture', shaders.advect_velocity);
+    this.shaders.jacobi_diffusion
+      .bind('velocity_texture', this.shaders.advect_velocity);
 
     if (
       guiparams.simulation.viscosity_iterations > 0 && (
@@ -113,63 +113,63 @@ export default class simulation {
       )
     ) {
       for (let i = 0; i < guiparams.simulation.viscosity_iterations; i++) {
-        shaders.jacobi_diffusion.render();
+        this.shaders.jacobi_diffusion.render();
 
         if (i == 0) {
-          shaders.jacobi_diffusion
-            .bind('velocity_texture', shaders.set_viscosity_velocity);
+          this.shaders.jacobi_diffusion
+            .bind('velocity_texture', this.shaders.set_viscosity_velocity);
         }
 
-        shaders.set_viscosity_velocity.render();
+        this.shaders.set_viscosity_velocity.render();
       }
     }
   }
 
   render_additional_forces() {
     // Additional forces.
-    shaders.buoyancy.render();
+    this.shaders.buoyancy.render();
           
     if (guiparams.dynamics.vorticity_confinement > 0) {
-      shaders.vorticity_magnitude.render();
-      shaders.vorticity_confinement.render();
-      shaders.add_buoyancy_and_vorticity.render();
+      this.shaders.vorticity_magnitude.render();
+      this.shaders.vorticity_confinement.render();
+      this.shaders.add_buoyancy_and_vorticity.render();
     }
 
-    shaders.add_forces_to_velocity.render();
+    this.shaders.add_forces_to_velocity.render();
   }
 
   render_water_continuity_and_thermodynamics() {
     // Water continuity and thermodynamics.
-    shaders.water_continuity.render();
-    shaders.thermodynamics.render();
-    shaders.set_density.bind('source', shaders.thermodynamics);
-    shaders.set_density.render();
+    this.shaders.water_continuity.render();
+    this.shaders.thermodynamics.render();
+    this.shaders.set_density.bind('source', this.shaders.thermodynamics);
+    this.shaders.set_density.render();
   }
 
   render_incompressibility() {
     // Incompressibility: calculate pressure and fix velocity.
     // If pressure_iterations = 0, skip and set final velocity directly
     // from buoyancy.
-    shaders.set_velocity.bind('source', shaders.subtract_gradient);
+    this.shaders.set_velocity.bind('source', this.shaders.subtract_gradient);
 
     if (guiparams.simulation.pressure_iterations > 0) {
-      shaders.divergence.render();
-      shaders.jacobi_pressure.bind('pressure', shaders.black);
+      this.shaders.divergence.render();
+      this.shaders.jacobi_pressure.bind('pressure', this.shaders.black);
 
-      for (var i = 0; i < guiparams.simulation.pressure_iterations; i++) {
-        shaders.jacobi_pressure.render();
+      for (let i = 0; i < guiparams.simulation.pressure_iterations; i++) {
+        this.shaders.jacobi_pressure.render();
 
         if (i == 0) {
-          shaders.jacobi_pressure.bind('pressure', shaders.set_pressure);
+          this.shaders.jacobi_pressure.bind('pressure', this.shaders.set_pressure);
         }
 
-        shaders.set_pressure.render();
+        this.shaders.set_pressure.render();
       }
 
-      shaders.subtract_gradient.render();
+      this.shaders.subtract_gradient.render();
     }
 
-    shaders.set_velocity.render();
+    this.shaders.set_velocity.render();
   }
 
   // Render density or velocity to canvas.
@@ -195,7 +195,7 @@ export default class simulation {
       this.render_visualization();
     }
 
-    requestAnimationFrame(render);
+    requestAnimationFrame(this.render.bind(this));
     if (this.stats) this.stats.update();
   }
-};
+}

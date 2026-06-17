@@ -1,4 +1,4 @@
-import * as THREE from './three.module.js';
+import * as THREE from 'three';
 import shaderop from './shaderop.js';
 
 export const func_rand = `
@@ -162,7 +162,7 @@ neighbors mask_neighbors(sampler2D tex, sampler2D mask, vec2 coord) {
 	neighbors n = nearest_neighbors(tex, coord);
     return neighbors(
 	    (1. - m.left.w) * n.left + m.left.w * m.left,
-    	(1. - m.right.w) * n.right + m.right.w * m.right,
+   	(1. - m.right.w) * n.right + m.right.w * m.right,
 	    (1. - m.up.w) * n.up + m.up.w * m.up,
 	    (1. - m.down.w) * n.down + m.down.w * m.down
 	);
@@ -446,12 +446,12 @@ void main() {
   float liq = ql_qv_ptemp.x;				// g liq / g dry
   float vap = ql_qv_ptemp.y;				// g vap / g dry
   float ptemp_hat = ql_qv_ptemp.z;	// K
-  float p = env.x;	         				// kPa
+  float p = env.x;	        				// kPa
 
   float exner = pow(p / p0, Rd / dry_cp);
 
   // Clausius-Clapeyron, Stull (2015) Meteo. for Sci. & Eng., 3rd ed.
-  float T = ptemp_hat * exner + env.y;						// K,		p. 61
+  float T = ptemp_hat * exner + env.y;				// K,		p. 61
   /*
     svp = .611 * exp((Lv / Rv) * (1 / 273.15 - 1 / T));	// kPa, 	p. 88
 
@@ -493,7 +493,7 @@ uniform float vapor_cp;		// J / kg K
 uniform float vapor_cv;		// J / kg K
 uniform float dry_cp;			// J / kg K
 uniform float dry_cv;			// J / kg K
-uniform float p0;	    		// kPa
+uniform float p0;	    			// kPa
 uniform float Lv;   			// J / kg
 uniform float dt;
 uniform vec2 dim;
@@ -510,8 +510,8 @@ void main() {
   float Rd = dry_cp - dry_cv;		  // J / kg K
 
   // Variables.
-  float C = ql_qv_ptemp_C.w;     	// 0-1
-  float p = env.x;	             	// kPa
+  float C = ql_qv_ptemp_C.w;    		// 0-1
+  float p = env.x;	            		// kPa
 
   // Compute.
   float exner = pow(p / p0, Rd / dry_cp);
@@ -853,7 +853,7 @@ export const add_shaders = function(shaders, uniforms, renderer, camera) {
 
   var textureLoader = new THREE.TextureLoader();
   textureLoader.load(
-    './images/2d_signed_hue_metal.png',
+    '/images/2d_signed_hue_metal.png',
     t => shaders.vis_velocity.uniforms.colormap.value = t
   );
 }

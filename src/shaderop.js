@@ -1,11 +1,11 @@
-import * as THREE from './three.module.js';
+import * as THREE from 'three';
 
 export default class shaderop {
   constructor(shader, uniforms, renderer, camera, name) {
     this.uniforms = uniforms;
 
     this.scene = new THREE.Scene();
-    this.plane = new THREE.PlaneBufferGeometry(2, 2);
+    this.plane = new THREE.PlaneGeometry(2, 2);
     this.material = new THREE.ShaderMaterial({
       fragmentShader: shader, uniforms: uniforms
     });
@@ -45,4 +45,4 @@ export default class shaderop {
   bind(key, target) { this.uniforms[key].value = target.texture.texture; }
 
   resize(w, h) { this.texture.setSize(w, h); }
-};
+}

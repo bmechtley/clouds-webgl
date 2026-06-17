@@ -1,5 +1,5 @@
-import * as THREE from './three.module.js';
-import * as DAT from './dat.gui.module.js';
+import * as THREE from 'three';
+import * as DAT from 'dat.gui';
 
 function is_object(v) {
   return (v && typeof v === 'object' && !Array.isArray(v) && v !== null);
@@ -43,7 +43,6 @@ const defaults = {
     external_viscosity_gain: 0,
     dry_cv: 717,
     dry_cp: 1004,
-    dry_cv: 1850,
     vapor_cv: 1388.5,
     vapor_cp: 1850
   },
@@ -122,8 +121,6 @@ export const presets = {
 Object.values(presets.remembered)
   .filter(v => v.hasOwnProperty('0'))
   .forEach(v => merge_objects(v['0'], defaults));
-
-console.log('presets', presets, defaults);
 
 const ranges = {
   render: {value: true},
@@ -217,9 +214,6 @@ function set_ranges(paramset = parameters, rangeset = ranges) {
 }
 
 merge_objects(parameters, ranges);
-//set_ranges();
-console.log('ranges', ranges)
-console.log('parameters', parameters);
 
 export const uniforms = {}, guiparams = {}, controllers = {};
 
