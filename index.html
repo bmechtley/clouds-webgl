@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <script src='./js/stats.min.js' language='javascript'></script>
+    <style>
+      html, body { height: 100%; margin: 0; }
+      #c { width: 100%; height: 100%; display: block; cursor: pointer; }
+    </style>
+  </head>
+
+  <body>
+    <canvas id="c"></canvas>
+    <video id="video" style="display:none" autoplay playsinline></video>
+  </body>
+
+  <script type="module">
+    import * as THREE from './js/three.module.js';
+    import { simulation } from './simulation.js';
+    import { Stats } from './stats.js';
+    import { build_gui_params_and_uniforms, controllers } from './parameters.js';
+
+    canvas = document.querySelector('#c');
+    renderer = new THREE.WebGLRenderer({ canvas });
+    camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -1, 1);
+  
+    export const stats = new Stats();
+    stats.setMode(0);
+    stats.domElement.style.position = 'absolute';
+    stats.domElement.style.left = '0';
+    stats.domElement.style.top = '0';
+    document.body.appendChild(stats.domElement);
+
+    export const gui = new DAT.GUI({ load: presets });
+    build_gui_params_and_uniforms();
+    gui.remember(guiparams);
+    build_gui_controllers();
+
+    console.log('uniforms', uniforms);
+    console.log('guiparams', guiparams);
+    console.log('controllers', controllers);
+    uniforms.simulation.time = { value: 0 };
+
+    const simulation = new simulation(stats);
+    simulation.on_render = () => {
+      const canvas = renderer.domElement;
+      const width = canvas.clientWidth;
+      const height = canvas.clientHeight;
+
+      if (canvas.width !== width || canvas.height !== height) {
+        renderer.setSize(width, height, false);
+        guiparams.simulation.dim.set(width, height);
+        Object.keys(shaders).map(k => shaders[k].resize(width, height));
+      }
+    }
+
+    // Toggling pressure jacobi iterations, viscosity, and vorticity changes
+    // the shader graph. So if their GUI toggles are 0, bypass their shaders.
+    [
+      {
+        // controller is the toggle checkbox
+        controller: controllers.simulation.pressure_iterations,
+        shader: 'set_velocity',
+        texture: 'source',
+        nonzero: 'subtract_gradient',
+        zero: 'buoyancy'
+      }, {
+        controller: controllers.simulation.viscosity_iterations,
+        shader: 'add_forces_to_velocity',
+        texture: 'two',
+        nonzero: 'set_viscosity_velocity',
+        zero: 'advect_velocity'
+      }, {
+        controller: controllers.dynamics.vorticity_confinement,
+        shader: 'add_forces_to_velocity',
+        texture: 'one',
+        nonzero: 'add_buoyancy_and_vorticity',
+        zero: 'buoyancy'
+      }
+    ].forEach(
+      p => p.controller.onFinishChange(v => { 
+        simulation.shaders[p.shader].bind(
+          p.texture,
+          v > 0 ? shaders[p.nonzero] : shaders[p.zero]
+        ) 
+      })
+    );
+
+    const scale_keys = ['low', 'high', 'contrast'];
+    const density_keys = ['liquid', 'vapor', 'temperature'];
+
+    // Update visualization settings with simplified parameters.
+    scale_keys.forEach(param => {
+      density_keys.forEach(component => {
+        controllers.visualization.density[param][component].onFinishChange(v => 
+          simulation.shaders.vis_density.uniforms[param].value.set(
+            ...density_keys.map(
+              subfield => guiparams.visualization.density[param][subfield]
+            ),
+            1
+          )
+        )
+      });
+    });
+
+    scale_keys.forEach(p => 
+      controllers.visualization.velocity[p].onFinishChange(v => 
+        simulation.shaders.vis_velocity.uniforms[p].value.set(v, v, v, v)
+      )
+    );
+
+    canvas.addEventListener(
+      'mousedown', e => simulation.mice[0].down = true, false
+    );
+    canvas.addEventListener(
+      'mouseup', e => simulation.mice[0].down = false, false
+    );
+    canvas.addEventListener('mousemove', e => 
+      simulation.update_mouse(e.offsetX, e.offsetY, mice, 0)
+    );
+    canvas.addEventListener('touchstart', e => 
+      simulation.mice.map((m, i) => m.down = i < e.touches.length())
+    );
+    canvas.addEventListener('touchend', e =>
+      simulation.mice.map((m, i) => m.down = i < e.touches.length())
+    );
+    canvas.addEventListener('touchmove', e => e.touches.map((t, i) => 
+      simulation.update_mouse(t.clientX, t.clientY, mice, i)
+    ));
+
+    simulation.start();
+  </script>
+</html>
