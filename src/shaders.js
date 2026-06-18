@@ -833,23 +833,43 @@ export const add_shaders = function(shaders, uniforms, renderer, camera) {
 
   add_shader(colormap_2d_signed, {
     dim: uniforms.simulation.dim,
-    low: new THREE.Vector4(),
-    high: new THREE.Vector4(),
-    contrast: new THREE.Vector4(),
+    low: new THREE.Vector4(-0.1, -0.1, -0.1, -0.1),
+    high: new THREE.Vector4(0.1, 0.1, 0.1, 0.1),
+    contrast: new THREE.Vector4(1, 1, 1, 1),
     source_vars: new THREE.Vector4(0, 1, 2, 3),
     source: shaders.set_velocity.texture.texture,
     colormap: shaders.black.texture.texture
   }, 'vis_velocity');
 
+  // Keep vis_velocity uniforms synced with GUI params each frame.
+  shaders.vis_velocity.prerender = function(s) {
+    const vv = uniforms.visualization.velocity;
+    const lo = vv.low.value, hi = vv.high.value, co = vv.contrast.value;
+    s.uniforms.low.value.set(lo, lo, lo, lo);
+    s.uniforms.high.value.set(hi, hi, hi, hi);
+    s.uniforms.contrast.value.set(co, co, co, co);
+  };
+
   add_shader(colormap_watertemp, {
     dim: uniforms.simulation.dim,
-    contrast: new THREE.Vector4(),
-    high: new THREE.Vector4(),
-    low: new THREE.Vector4(),
+    contrast: new THREE.Vector4(0.231, 0.0889, 1, 0),
+    high: new THREE.Vector4(0.0048, 0.002, 785, 0),
+    low: new THREE.Vector4(0, 0, 230, 0),
     source_vars: new THREE.Vector4(0, 1, 2, 3),
     source: shaders.set_density.texture.texture,
     background: shaders.env_pressure.texture.texture
   }, 'vis_density');
+
+  // Keep vis_density uniforms synced with GUI params each frame.
+  shaders.vis_density.prerender = function(s) {
+    const vd = uniforms.visualization.density;
+    s.uniforms.contrast.value.set(
+      vd.contrast.liquid.value, vd.contrast.vapor.value, vd.contrast.temperature.value, 0);
+    s.uniforms.low.value.set(
+      vd.low.liquid.value, vd.low.vapor.value, vd.low.temperature.value, 0);
+    s.uniforms.high.value.set(
+      vd.high.liquid.value, vd.high.vapor.value, vd.high.temperature.value, 0);
+  };
 
   var textureLoader = new THREE.TextureLoader();
   textureLoader.load(

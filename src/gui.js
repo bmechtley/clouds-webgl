@@ -252,10 +252,8 @@ export function build_gui_params_and_uniforms(
 
 export function build_gui_controllers(
   paramset = parameters, guiparamset = guiparams, uniformset = uniforms,
-  controllerset = controllers, folder = gui
+  controllerset = controllers, folder
 ) {
-  gui.remember(guiparamset);
-
   Object.keys(paramset).map(key => {
     const gui_param = guiparamset[key];
     const param = paramset[key];
@@ -263,8 +261,6 @@ export function build_gui_controllers(
     if (param.hasOwnProperty('value')) {
       const is_slider = ['min', 'max', 'step']
         .every(v => param.hasOwnProperty(v));
-
-      gui.remember(guiparamset[key]);
 
       if (Array.isArray(param.value)) {
         const vfolder = folder.addFolder(key);

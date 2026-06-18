@@ -5,13 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
     <style>
       html, body { height: 100%; margin: 0; }
-      #c { width: 100%; height: 100%; display: block; cursor: pointer; }
+      #c { width: 100%; height: 100%; display: block; cursor: crosshair; }
     </style>
   </head>
 
   <body>
     <canvas id="c"></canvas>
-    <video id="video" style="display:none" autoplay playsinline></video>
   </body>
 
   <script type="module">
@@ -19,11 +18,57 @@
     import * as DAT from 'dat.gui';
     import Simulation from './src/simulation.js';
     import Stats from 'stats.js';
-    import { build_gui_params_and_uniforms, controllers, presets, guiparams, uniforms } from './src/gui.js';
+    import {
+      build_gui_params_and_uniforms, build_gui_controllers,
+      parameters, controllers, presets, guiparams, uniforms
+    } from './src/gui.js';
 
     const canvas = document.querySelector('#c');
     const renderer = new THREE.WebGLRenderer({ canvas });
+    renderer.setSize(window.innerWidth, window.innerHeight, false);
     const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -1, 1);
+
+    const gui = new DAT.GUI();
+
+    build_gui_params_and_uniforms();
+
+    // Run simulation at window resolution so dim matches render targets (shaderop uses window size).
+    uniforms.simulation.dim.value.set(window.innerWidth, window.innerHeight);
+
+    uniforms.simulation.time = { value: 0 };
+
+    // Preset selector — shown at the top of the panel before other controls.
+    const presetNames = Object.keys(presets.remembered);
+    const presetState = { preset: presetNames[0] };
+    gui.add(presetState, 'preset', presetNames).onChange(name => {
+      const p = presets.remembered[name]?.['0'];
+      if (!p) return;
+      // Apply all preset values to guiparams/uniforms in-place, skipping dim
+      // (managed externally at window resolution).
+      function apply(src, gp, uni) {
+        Object.keys(src).forEach(k => {
+          if (!Object.prototype.hasOwnProperty.call(gp, k)) return;
+          if (k === 'dim') return;
+          const val = src[k], gpv = gp[k];
+          if (Array.isArray(val)) {
+            if (gpv && typeof gpv.fromArray === 'function') gpv.fromArray(val);
+          } else if (val !== null && typeof val === 'object') {
+            apply(val, gpv, uni?.[k]);
+          } else {
+            gp[k] = val;
+            if (uni?.[k]) uni[k].value = val;
+          }
+        });
+      }
+      apply(p, guiparams, uniforms);
+      // Refresh all dat.gui controllers recursively.
+      (function refresh(folder) {
+        folder.__controllers.forEach(c => c.updateDisplay());
+        Object.values(folder.__folders || {}).forEach(refresh);
+      })(gui);
+    });
+
+    build_gui_controllers(parameters, guiparams, uniforms, controllers, gui);
 
     const stats = new Stats();
     stats.setMode(0);
@@ -32,100 +77,26 @@
     stats.domElement.style.top = '0';
     document.body.appendChild(stats.domElement);
 
-    const gui = new DAT.GUI({ load: presets });
-    build_gui_params_and_uniforms();
-    gui.remember(guiparams);
-    build_gui_controllers();
-
-    uniforms.simulation.time = { value: 0 };
-
-    const sim = new Simulation(null, stats);
-    sim.on_render = () => {
-      const w = canvas.clientWidth;
-      const h = canvas.clientHeight;
-
-      if (canvas.width !== w || canvas.height !== h) {
-        renderer.setSize(w, h, false);
-        guiparams.simulation.dim.set(w, h);
-        Object.keys(sim.shaders).map(k => sim.shaders[k].resize(w, h));
-      }
-    }
-
-    // Toggling pressure jacobi iterations, viscosity, and vorticity changes
-    // the shader graph. So if their GUI toggles are 0, bypass their shaders.
-    [
-      {
-        controller: controllers.simulation.pressure_iterations,
-        shader: 'set_velocity',
-        texture: 'source',
-        nonzero: 'subtract_gradient',
-        zero: 'buoyancy'
-      }, {
-        controller: controllers.simulation.viscosity_iterations,
-        shader: 'add_forces_to_velocity',
-        texture: 'two',
-        nonzero: 'set_viscosity_velocity',
-        zero: 'advect_velocity'
-      }, {
-        controller: controllers.dynamics.vorticity_confinement,
-        shader: 'add_forces_to_velocity',
-        texture: 'one',
-        nonzero: 'add_buoyancy_and_vorticity',
-        zero: 'buoyancy'
-      }
-    ].forEach(
-      p => p.controller.onFinishChange(v => { 
-        sim.shaders[p.shader].bind(
-          p.texture,
-          v > 0 ? sim.shaders[p.nonzero] : sim.shaders[p.zero]
-        ) 
-      })
-    );
-
-    const scale_keys = ['low', 'high', 'contrast'];
-    const density_keys = ['liquid', 'vapor', 'temperature'];
-
-    scale_keys.forEach(param => {
-      density_keys.forEach(component => {
-        controllers.visualization.density[param][component].onFinishChange(v => 
-          sim.shaders.vis_density.uniforms[param].value.set(
-            ...density_keys.map(
-              subfield => guiparams.visualization.density[param][subfield]
-            ),
-            1
-          )
-        )
-      });
-    });
-
-    scale_keys.forEach(p => 
-      controllers.visualization.velocity[p].onFinishChange(v => 
-        sim.shaders.vis_velocity.uniforms[p].value.set(v, v, v, v)
-      )
-    );
-
-    canvas.addEventListener(
-      'mousedown', e => sim.mice[0].down = true, false
-    );
-    canvas.addEventListener(
-      'mouseup', e => sim.mice[0].down = false, false
-    );
-    canvas.addEventListener('mousemove', e => 
-      sim.update_mouse(e.offsetX, e.offsetY, sim.mice, 0)
-    );
-    canvas.addEventListener('touchstart', e => 
-      sim.mice.map((m, i) => m.down = i < e.touches.length)
-    );
-    canvas.addEventListener('touchend', e =>
-      sim.mice.map((m, i) => m.down = i < e.touches.length)
-    );
-    canvas.addEventListener('touchmove', e => {
-      e.preventDefault();
-      [...e.touches].map((t, i) => 
-        sim.update_mouse(t.clientX, t.clientY, sim.mice, i)
-      );
-    });
-
+    const sim = new Simulation(renderer, camera, stats);
     sim.start();
+
+    // Mouse interaction — drag to paint vapor/density.
+    canvas.addEventListener('mousemove', e => {
+      sim.update_mouse(e.clientX, e.clientY, null, 0);
+    });
+    canvas.addEventListener('mousedown', e => {
+      sim.mice[0].down = true;
+      sim.update_mouse(e.clientX, e.clientY, null, 0);
+    });
+    canvas.addEventListener('mouseup', () => { sim.mice[0].down = false; });
+    canvas.addEventListener('mouseleave', () => { sim.mice[0].down = false; });
+
+    // Resize: update renderer, dim, and all render targets.
+    window.addEventListener('resize', () => {
+      const w = window.innerWidth, h = window.innerHeight;
+      renderer.setSize(w, h, false);
+      uniforms.simulation.dim.value.set(w, h);
+      Object.values(sim.shaders).forEach(s => s.resize(w, h));
+    });
   </script>
 </html>

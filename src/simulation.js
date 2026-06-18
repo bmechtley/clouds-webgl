@@ -12,7 +12,11 @@ export default class simulation {
   }));
   first_frame = true;
 
-  constructor(canvas, stats) { this.stats = stats; }
+  constructor(renderer, camera, stats) {
+    this.renderer = renderer;
+    this.camera = camera;
+    this.stats = stats;
+  }
 
   update_mouse(x, y, mice, mouse_index) {
     // Get mouse coordinates.
@@ -29,8 +33,8 @@ export default class simulation {
   };
 
   start() {
-    renderer.autoClearColor = false;
-    add_shaders(this.shaders, uniforms, renderer, camera);
+    this.renderer.autoClearColor = false;
+    add_shaders(this.shaders, uniforms, this.renderer, this.camera);
     this.first_frame = true;
     requestAnimationFrame(this.render.bind(this));
   }
