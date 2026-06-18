@@ -403,19 +403,30 @@ void main() {
 export const add_mouse_vec2 = `
 #include <common>
 uniform vec2 dim;
-uniform vec3 mouse;
 uniform vec4 multiplier;
 uniform float radius;
 uniform float sharpness;
 uniform sampler2D source;
+uniform float n_stamps;
+uniform vec2 stamp_pos[128];
 
 void main() {
   vec2 uv = gl_FragCoord.xy / dim;
   vec2 scale = dim / vec2(max(dim.x, dim.y));
-  float d = length(scale  * (uv - mouse.xy));
-  float s = mouse.z * (1. - clamp(d / radius, 0., 1.));//smoothstep(0., radius, d));
+  vec2 suv = uv * scale;
   vec4 src = texture2D(source, uv);
-  gl_FragColor = src + vec4(s) * multiplier;
+  float s = 0.0;
+  float radInv = 1.0 / radius;
+  for (int i = 0; i < 128; i++) {
+    if (float(i) >= n_stamps) break;
+    float d = length(suv - stamp_pos[i] * scale);
+    s += 1.0 - clamp(d * radInv, 0.0, 1.0);
+  }
+  float stamp = min(s, 1.0);
+  gl_FragColor = src + vec4(stamp) * multiplier;
+  // Clamp only pixels that actually received paint, leaving
+  // unpainted pixels (and velocity/temperature) untouched.
+  gl_FragColor = mix(gl_FragColor, clamp(gl_FragColor, 0.0, 1.0), step(1e-6, stamp));
 }
 `;
 
@@ -661,19 +672,21 @@ export const add_shaders = function(shaders, uniforms, renderer, camera) {
   add_shader(add_mouse_vec2, {
     dim: uniforms.simulation.dim,
     source: shaders.black.texture.texture,
-    mouse:  new THREE.Vector3(0, 0, 0),
     multiplier: new THREE.Vector4(),
-    radius: 0.1,
-    sharpness: uniforms.external.mouse_sharpness
+    radius: { value: 0.1 },
+    sharpness: uniforms.external.mouse_sharpness,
+    n_stamps: { value: 0 },
+    stamp_pos: { value: Array.from({ length: 128 }, () => new THREE.Vector2()) }
   }, 'add_mouse_to_density');
 
   add_shader(add_mouse_vec2, {
     dim: uniforms.simulation.dim,
     source: shaders.black.texture.texture,
-    mouse:  shaders.add_mouse_to_density.uniforms.mouse,
     multiplier: new THREE.Vector4(),
     radius: shaders.add_mouse_to_density.uniforms.radius,
-    sharpness: shaders.add_mouse_to_density.uniforms.sharpness
+    sharpness: shaders.add_mouse_to_density.uniforms.sharpness,
+    n_stamps: shaders.add_mouse_to_density.uniforms.n_stamps,
+    stamp_pos: shaders.add_mouse_to_density.uniforms.stamp_pos
   }, 'add_mouse_to_velocity');
 
   // Advection.

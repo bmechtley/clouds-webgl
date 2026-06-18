@@ -5,12 +5,17 @@ import { uniforms, guiparams } from './gui.js';
 export default class simulation {
   // Set up the three.js scene.
   shaders = {};
-  mice = [...new Array(10)].map(m => ({ 
+  mice = [...new Array(10)].map(m => ({
     position: new THREE.Vector2(),
     velocity: new THREE.Vector2(),
+    pending: [],   // mousemove positions collected between renders
+    lastStamp: null,
     down: false
   }));
   first_frame = true;
+  cpuTimings = {};
+  gpuTimings = {};
+  _pendingQueries = [];
 
   constructor(renderer, camera, stats) {
     this.renderer = renderer;
@@ -19,24 +24,64 @@ export default class simulation {
   }
 
   update_mouse(x, y, mice, mouse_index) {
-    // Get mouse coordinates.
     const dim = uniforms.simulation.dim.value;
     const position = new THREE.Vector2(x / dim.x, 1 - y / dim.y);
     const mouse = this.mice[mouse_index];
     if (!mouse) return;
 
-    // Calculate velocity of this mouse.
-    mouse.velocity.copy(position);
-    mouse.velocity.sub(mouse.position);
-    mouse.velocity.multiplyScalar(uniforms.external.mouse_velocity.value);
+    mouse.velocity.copy(position).sub(mouse.position)
+      .multiplyScalar(uniforms.external.mouse_velocity.value);
     mouse.position.copy(position);
+    if (mouse.down) mouse.pending.push(position.clone());
   };
+
+  // Catmull-Rom interpolation between p1 and p2, with p0/p3 as tangent guides.
+  _cr(p0, p1, p2, p3, t) {
+    const t2 = t * t, t3 = t2 * t;
+    return new THREE.Vector2(
+      0.5 * (2*p1.x + (-p0.x+p2.x)*t + (2*p0.x-5*p1.x+4*p2.x-p3.x)*t2 + (-p0.x+3*p1.x-3*p2.x+p3.x)*t3),
+      0.5 * (2*p1.y + (-p0.y+p2.y)*t + (2*p0.y-5*p1.y+4*p2.y-p3.y)*t2 + (-p0.y+3*p1.y-3*p2.y+p3.y)*t3)
+    );
+  }
 
   start() {
     this.renderer.autoClearColor = false;
     add_shaders(this.shaders, uniforms, this.renderer, this.camera);
     this.first_frame = true;
+    this.gl = this.renderer.getContext();
+    this.timerExt = this.gl.getExtension('EXT_disjoint_timer_query_webgl2');
     requestAnimationFrame(this.render.bind(this));
+  }
+
+  _time(key, fn) {
+    // CPU timing — always available, cheap.
+    const cpuT = performance.now();
+    fn();
+    this.cpuTimings[key] = performance.now() - cpuT;
+
+    // GPU timing — only when enabled (may stall on Metal).
+    if (guiparams.gpu_profile && this.timerExt) {
+      const q = this.gl.createQuery();
+      this.gl.beginQuery(this.timerExt.TIME_ELAPSED_EXT, q);
+      // Note: GPU query captures the GPU work queued by fn(), not fn() itself.
+      this._pendingQueries.push({ key, query: q });
+      this.gl.endQuery(this.timerExt.TIME_ELAPSED_EXT);
+    }
+  }
+
+  _collectTimers() {
+    if (!guiparams.gpu_profile || !this.timerExt) return;
+    const gl = this.gl, ext = this.timerExt;
+    if (this._pendingQueries.length > 80)
+      this._pendingQueries.splice(0, this._pendingQueries.length - 80)
+        .forEach(({ query }) => gl.deleteQuery(query));
+    this._pendingQueries = this._pendingQueries.filter(({ key, query }) => {
+      if (!gl.getQueryParameter(query, gl.QUERY_RESULT_AVAILABLE)) return true;
+      if (!gl.getParameter(ext.GPU_DISJOINT_EXT))
+        this.gpuTimings[key] = gl.getQueryParameter(query, gl.QUERY_RESULT) / 1e6;
+      gl.deleteQuery(query);
+      return false;
+    });
   }
 
   // Initial density and velocity, "constants".
@@ -49,51 +94,78 @@ export default class simulation {
   }  
 
   render_mice() {
-    // For each mouse, render the additional density and velocity and then
-    // copy the texture to set_velocity and set_density for the next.
-    this.mice.filter(m => m.down).forEach((m, i) => {
-      const shader_mouse = 
-        this.shaders.add_mouse_to_density.uniforms.mouse.value;
-      
-      const shader_velocity_multiplier = 
-        this.shaders.add_mouse_to_velocity.uniforms.multiplier.value;
-      
-      const shader_density_multiplier = 
-        this.shaders.add_mouse_to_density.uniforms.multiplier.value;
+    const m = this.mice[0];
+    const uDensity = this.shaders.add_mouse_to_density.uniforms;
+    const uVelocity = this.shaders.add_mouse_to_velocity.uniforms;
 
-      const velocity_scale = uniforms.external.mouse_velocity.value;
-      const density_multiplier = new THREE.Vector4(
-        ...['liquid', 'vapor', 'temperature'].map(
-          quantity => uniforms.external.mouse_density[quantity].value
-        ),
-        1
-      );
-      const shader_radius = this.shaders.add_mouse_to_density.uniforms.radius;
-
-      shader_mouse.copy(m.position);
-      shader_mouse.z = 1;
-      shader_radius.value = 
-        Math.pow(Math.max(0.1 - m.velocity.length(), 0.1), 2) * 
-        uniforms.external.mouse_radius.value;
-
-      shader_velocity_multiplier.set(m.velocity.x, m.velocity.y, 0, 0);
-      shader_velocity_multiplier.multiplyScalar(velocity_scale);
-
-      shader_density_multiplier.copy(density_multiplier);
-      shader_density_multiplier
-        .multiplyScalar(velocity_scale * m.velocity.length());
-
+    if (!m.down) {
+      // Passthrough: propagate current sim state so advection reads fresh data.
+      uDensity.n_stamps.value = 0;
       this.shaders.add_mouse_to_density.render();
       this.shaders.add_mouse_to_velocity.render();
+      return;
+    }
 
-      if (i == 0) {
-        this.shaders.set_velocity.bind('source', this.shaders.add_mouse_to_velocity);
-        this.shaders.set_density.bind('source', this.shaders.add_mouse_to_density);
+    uDensity.radius.value =
+      Math.pow(Math.max(0.1 - m.velocity.length(), 0.1), 2) *
+      uniforms.external.mouse_radius.value;
+
+    const vScale = uniforms.external.mouse_velocity.value;
+    uVelocity.multiplier.value.set(m.velocity.x, m.velocity.y, 0, 0)
+      .multiplyScalar(vScale);
+
+    uDensity.multiplier.value.set(
+      uniforms.external.mouse_density.liquid.value,
+      uniforms.external.mouse_density.vapor.value,
+      uniforms.external.mouse_density.temperature.value,
+      1
+    ).multiplyScalar(vScale * m.velocity.length());
+
+    // Build spline through pending positions + lastStamp for continuity.
+    let pts = m.pending.length ? [...m.pending] : [];
+    if (m.lastStamp) pts.unshift(m.lastStamp);
+    if (!pts.length) pts = [m.position];
+
+    let stamps;
+    if (pts.length === 1) {
+      stamps = [pts[0].clone()];
+    } else {
+      // Arc length of pending points to determine stamp count.
+      let len = 0;
+      for (let j = 1; j < pts.length; j++)
+        len += pts[j].distanceTo(pts[j - 1]);
+
+      // Space stamps at smoothness fraction of radius (lower = smoother).
+      const step = uDensity.radius.value * uniforms.external.mouse_smoothness.value;
+      const n = Math.min(128, Math.max(2, Math.ceil(len / Math.max(1e-6, step))));
+
+      stamps = [];
+      const total = pts.length - 1;
+      for (let s = 0; s < n; s++) {
+        const ft = (s / (n - 1)) * total;
+        const idx = Math.min(Math.floor(ft), total - 1);
+        const t = ft - idx;
+        stamps.push(this._cr(
+          pts[Math.max(0, idx - 1)], pts[idx],
+          pts[Math.min(pts.length - 1, idx + 1)],
+          pts[Math.min(pts.length - 1, idx + 2)], t));
       }
+    }
+    m.lastStamp = stamps[stamps.length - 1].clone();
 
-      this.shaders.set_density.render();
-      this.shaders.set_velocity.render();
-    });
+    uDensity.n_stamps.value = stamps.length;
+    const pos = uDensity.stamp_pos.value;
+    stamps.forEach((p, j) => pos[j].copy(p));
+
+    this.shaders.add_mouse_to_density.render();
+    this.shaders.add_mouse_to_velocity.render();
+
+    this.shaders.set_velocity.bind('source', this.shaders.add_mouse_to_velocity);
+    this.shaders.set_density.bind('source', this.shaders.add_mouse_to_density);
+    this.shaders.set_density.render();
+    this.shaders.set_velocity.render();
+
+    m.pending = [];
   }
 
   render_external_density_and_velocity() {
@@ -184,19 +256,20 @@ export default class simulation {
 
   render(time) {
     time *= 0.001;  // convert to seconds
+    if (this.timerExt) this._collectTimers();
     if (this.on_render) this.on_render();
 
     uniforms.simulation.time.value = time;
 
-    if (guiparams.render) {
-      this.render_constants();
-      this.render_external_density_and_velocity();
-      this.render_advection();
-      this.render_viscous_diffusion();
-      this.render_additional_forces();
-      this.render_water_continuity_and_thermodynamics();
-      this.render_incompressibility();
-      this.render_visualization();
+    if (guiparams.render && (!guiparams.mouse_only || this.mice.some(m => m.down))) {
+      this._time('constants',         () => this.render_constants());
+      this._time('mice',              () => this.render_external_density_and_velocity());
+      this._time('advection',         () => this.render_advection());
+      this._time('diffusion',         () => this.render_viscous_diffusion());
+      this._time('forces',            () => this.render_additional_forces());
+      this._time('thermodynamics',    () => this.render_water_continuity_and_thermodynamics());
+      this._time('incompressibility', () => this.render_incompressibility());
+      this._time('visualization',     () => this.render_visualization());
     }
 
     requestAnimationFrame(this.render.bind(this));

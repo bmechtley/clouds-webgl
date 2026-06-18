@@ -54,6 +54,7 @@ const defaults = {
     mouse_velocity: 2,
     mouse_radius: 0.1,
     mouse_sharpness: 1.0,
+    mouse_smoothness: 0.7,
     mouse_density: {
       liquid: 0,
       vapor: 0.1,
@@ -161,6 +162,7 @@ const ranges = {
     mouse_velocity: {min: -100, max: 100, step: 0.01},
     mouse_radius: {min: 0, max: 2, step: 0.01},
     mouse_sharpness: {min: 0, max: 10, step: 0.01},
+    mouse_smoothness: {min: 0.1, max: 2.0, step: 0.05},
     mouse_density: {
       liquid: { min: 0, max: 0.1, step: 0.0001 },
       vapor: { min: 0, max: 0.1, step: 0.0001 }, 

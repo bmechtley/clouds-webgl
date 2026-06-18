@@ -68,7 +68,23 @@
       })(gui);
     });
 
+    guiparams.mouse_only = false;
+    gui.add(guiparams, 'mouse_only').name('mouse only');
+    guiparams.show_cdf = false;
+    gui.add(guiparams, 'show_cdf').name('show cdf').onChange(v => {
+      cdfEl.style.display = v ? '' : 'none';
+    });
+    guiparams.gpu_profile = false;
+    gui.add(guiparams, 'gpu_profile').name('gpu profile');
+    guiparams.cpu_profile = false;
+    gui.add(guiparams, 'cpu_profile').name('cpu profile');
+
     build_gui_controllers(parameters, guiparams, uniforms, controllers, gui);
+
+    // Adaptive velocity range — not in parameters/ranges, added manually to the velocity folder.
+    guiparams.visualization.velocity.adaptive = false;
+    gui.__folders?.visualization?.__folders?.velocity
+      ?.add(guiparams.visualization.velocity, 'adaptive').name('adaptive');
 
     const stats = new Stats();
     stats.setMode(0);
@@ -86,6 +102,8 @@
     });
     canvas.addEventListener('mousedown', e => {
       sim.mice[0].down = true;
+      sim.mice[0].pending = [];
+      sim.mice[0].lastStamp = null;
       sim.update_mouse(e.clientX, e.clientY, null, 0);
     });
     canvas.addEventListener('mouseup', () => { sim.mice[0].down = false; });
@@ -97,6 +115,285 @@
       renderer.setSize(w, h, false);
       uniforms.simulation.dim.value.set(w, h);
       Object.values(sim.shaders).forEach(s => s.resize(w, h));
+      CDF_W = w; cdfEl.width = w; drawCDF();
     });
-  </script>
+
+    // Velocity magnitude CDF
+    const VEL_SAMPLE = 64;
+    const velReadTarget = new THREE.WebGLRenderTarget(VEL_SAMPLE, VEL_SAMPLE, {
+      type: THREE.FloatType, format: THREE.RGBAFormat,
+      minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
+      depthBuffer: false
+    });
+    const velReadBuf = new Float32Array(VEL_SAMPLE * VEL_SAMPLE * 4);
+
+    const blitMat = new THREE.ShaderMaterial({
+      uniforms: { map: { value: null } },
+      vertexShader: `varying vec2 vUv;
+        void main() { vUv = position.xy * 0.5 + 0.5; gl_Position = vec4(position.xy, 0., 1.); }`,
+      fragmentShader: `uniform sampler2D map; varying vec2 vUv;
+        void main() { gl_FragColor = texture2D(map, vUv); }`
+    });
+    const blitQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), blitMat);
+    const blitScene = new THREE.Scene();
+    blitScene.add(blitQuad);
+
+    let CDF_W = window.innerWidth; const CDF_H = 65;
+    const cdfEl = document.createElement('canvas');
+    cdfEl.width = CDF_W; cdfEl.height = CDF_H;
+    Object.assign(cdfEl.style, {
+      position: 'fixed', left: '0', bottom: '0',
+      width: '100%', height: CDF_H + 'px',
+      background: '#1a1a1a', borderTop: '1px solid #555',
+      cursor: 'ns-resize', userSelect: 'none', zIndex: '999'
+    });
+    document.body.appendChild(cdfEl);
+    cdfEl.style.display = guiparams.show_cdf ? '' : 'none';
+    const cdfCtx = cdfEl.getContext('2d');
+
+    // CDF state: always centred at 0, ±cdfHalfRange shown; edges = lo/hi bounds.
+    let cdfBuckets = new Float32Array(256);
+    let cdfDataAbsMax = 0;
+    let cdfHalfRange = Math.max(
+      Math.abs(guiparams.visualization.velocity.low),
+      Math.abs(guiparams.visualization.velocity.high), 0.1
+    );
+
+    const cdfVToX = v => (v / cdfHalfRange * 0.5 + 0.5) * CDF_W;
+    const cdfXToV = x => (x / CDF_W - 0.5) * 2 * cdfHalfRange;
+
+    function drawCDF() {
+      const pad = 16, gh = CDF_H - pad - 10;
+      cdfCtx.fillStyle = '#1a1a1a';
+      cdfCtx.fillRect(0, 0, CDF_W, CDF_H);
+
+      // CDF curve sampled per-pixel with linear interpolation into cdfBuckets.
+      const _dmin = -cdfDataAbsMax, _dmax = cdfDataAbsMax;
+      const dataRange = _dmax - _dmin;
+      cdfCtx.beginPath(); cdfCtx.strokeStyle = '#88ccff'; cdfCtx.lineWidth = 1.5;
+      for (let px = 0; px < CDF_W; px++) {
+        const v = cdfXToV(px);
+        let cdfVal;
+        if (dataRange < 1e-12) {
+          cdfVal = v >= 0 ? 1 : 0;
+        } else {
+          const bf = (v - _dmin) / dataRange * 255;
+          const b0 = Math.max(0, Math.min(254, bf | 0));
+          cdfVal = Math.max(0, Math.min(1,
+            cdfBuckets[b0] + (cdfBuckets[b0 + 1] - cdfBuckets[b0]) * (bf - b0)
+          ));
+        }
+        const y = pad + (1 - cdfVal) * gh;
+        px ? cdfCtx.lineTo(px, y) : cdfCtx.moveTo(px, y);
+      }
+      cdfCtx.stroke();
+
+      // Zero line.
+      const cx = cdfVToX(0);
+      cdfCtx.strokeStyle = '#444'; cdfCtx.lineWidth = 1;
+      cdfCtx.beginPath(); cdfCtx.moveTo(cx, pad); cdfCtx.lineTo(cx, pad + gh); cdfCtx.stroke();
+
+      // Labels.
+      cdfCtx.font = '10px monospace';
+      cdfCtx.fillStyle = '#888'; cdfCtx.textAlign = 'center';
+      cdfCtx.fillText('velocity visualization bounds  (scroll to zoom)', CDF_W / 2, 10);
+      cdfCtx.font = '9px monospace';
+      cdfCtx.fillStyle = '#4af'; cdfCtx.textAlign = 'left';
+      cdfCtx.fillText((-cdfHalfRange).toFixed(4), 4, CDF_H - 2);
+      cdfCtx.fillStyle = '#555'; cdfCtx.textAlign = 'center';
+      cdfCtx.fillText('0', cx, CDF_H - 2);
+      cdfCtx.fillStyle = '#f84'; cdfCtx.textAlign = 'right';
+      cdfCtx.fillText((+cdfHalfRange).toFixed(4), CDF_W - 4, CDF_H - 2);
+    }
+
+    function setCDFBounds(halfRange) {
+      cdfHalfRange = Math.max(1e-6, halfRange);
+      const lo = -cdfHalfRange, hi = cdfHalfRange;
+      guiparams.visualization.velocity.low = lo;
+      guiparams.visualization.velocity.high = hi;
+      uniforms.visualization.velocity.low.value = lo;
+      uniforms.visualization.velocity.high.value = hi;
+      controllers.visualization?.velocity?.low?.updateDisplay();
+      controllers.visualization?.velocity?.high?.updateDisplay();
+      drawCDF();
+    }
+
+    let cdfTiming = 0;
+    let adaptiveMax = cdfHalfRange;
+    const ADAPTIVE_RELEASE = 0.98;  // decay factor per CDF update (~every 5 frames)
+
+    // Fence-sync polling for non-blocking GPU→CPU readback.
+    // Avoids the ~200ms stall of synchronous gl.readPixels.
+    let _cdfFence = null, _cdfStartTime = 0;
+    const gl = renderer.getContext();
+
+    function _cdfPollAndProcess() {
+      if (_cdfFence) {
+        const status = gl.clientWaitSync(_cdfFence, 0, 0);
+        const done = status === gl.CONDITION_SATISFIED || status === gl.ALREADY_SIGNALED;
+        if (!done) return false;
+
+        gl.deleteSync(_cdfFence);
+        _cdfFence = null;
+
+        // GPU work done — readPixels returns instantly (no stall).
+        renderer.readRenderTargetPixels(velReadTarget, 0, 0, VEL_SAMPLE, VEL_SAMPLE, velReadBuf);
+
+        const N = VEL_SAMPLE * VEL_SAMPLE;
+        const vals = new Float32Array(N * 2);
+        let mn = Infinity, mx = -Infinity;
+        for (let i = 0; i < N; i++) {
+          const vx = velReadBuf[i*4], vy = velReadBuf[i*4+1];
+          vals[i*2] = vx; vals[i*2+1] = vy;
+          if (vx < mn) mn = vx; if (vx > mx) mx = vx;
+          if (vy < mn) mn = vy; if (vy > mx) mx = vy;
+        }
+        if (isFinite(mx)) {
+          cdfDataAbsMax = Math.max(Math.abs(mn), Math.abs(mx), cdfDataAbsMax);
+
+          if (guiparams.visualization.velocity.adaptive) {
+            const sampleMax = Math.max(Math.abs(mn), Math.abs(mx));
+            adaptiveMax = sampleMax > adaptiveMax
+              ? sampleMax
+              : adaptiveMax * ADAPTIVE_RELEASE + sampleMax * (1 - ADAPTIVE_RELEASE);
+            setCDFBounds(adaptiveMax);
+          }
+
+          const M = N * 2;
+          const cdfDataMin = -cdfDataAbsMax, cdfDataMax = cdfDataAbsMax;
+          const dr = cdfDataMax - cdfDataMin;
+          const counts = new Int32Array(256);
+          if (dr > 1e-12)
+            for (let i = 0; i < M; i++)
+              counts[Math.min(255, Math.max(0, (vals[i] - cdfDataMin) / dr * 256 | 0))]++;
+          let acc = 0;
+          for (let i = 0; i < 256; i++) { acc += counts[i]; cdfBuckets[i] = acc / M; }
+          drawCDF();
+        }
+        cdfTiming = performance.now() - _cdfStartTime;
+        return true;
+      }
+      return false;
+    }
+
+    function updateVelCDF() {
+      if (!sim.shaders.set_velocity) return;
+
+      // Poll fence from previous request.
+      _cdfPollAndProcess();
+
+      // If a fence is still pending, don't queue another.
+      if (_cdfFence) return;
+
+      // Render velocity to the small read target.
+      _cdfStartTime = performance.now();
+      blitMat.uniforms.map.value = sim.shaders.set_velocity.texture.texture;
+      renderer.setRenderTarget(velReadTarget);
+      renderer.render(blitScene, camera);
+      renderer.setRenderTarget(null);
+
+      // Insert a fence right after the render.
+      _cdfFence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+      gl.flush();
+
+      // Try polling immediately — on some drivers it may already be done.
+      _cdfPollAndProcess();
+    }
+
+    cdfEl.addEventListener('wheel', e => {
+      setCDFBounds(cdfHalfRange * Math.pow(1.15, e.deltaY > 0 ? 1 : -1));
+      e.preventDefault();
+    }, { passive: false });
+
+    // Performance timing overlay
+    const timingEl = document.createElement('pre');
+    Object.assign(timingEl.style, {
+      position: 'fixed', left: '0', top: '48px',
+      margin: '0', padding: '4px 8px',
+      font: '11px/1.5 monospace', color: '#8f8',
+      background: 'rgba(0,0,0,0.65)',
+      zIndex: '998', pointerEvents: 'none'
+    });
+    document.body.appendChild(timingEl);
+
+    const smoothCpu = {}, smoothGpu = {};
+    const T_ALPHA = 0.05;
+    const KEYS = ['constants','mice','advection','diffusion','forces',
+                  'thermodynamics','incompressibility','visualization'];
+
+    function updateTimingDisplay() {
+      const showCpu = guiparams.cpu_profile;
+      const showGpu = guiparams.gpu_profile;
+      if (!showCpu && !showGpu) { timingEl.textContent = ''; return; }
+
+      // Smooth CPU timings.
+      for (const k of KEYS) {
+        const v = sim.cpuTimings[k];
+        if (v != null)
+          smoothCpu[k] = smoothCpu[k] == null ? v : smoothCpu[k] * (1 - T_ALPHA) + v * T_ALPHA;
+      }
+      const ct = guiparams.show_cdf ? cdfTiming : 0;
+      smoothCpu.cdf = smoothCpu.cdf == null ? ct
+        : smoothCpu.cdf * (1 - T_ALPHA) + ct * T_ALPHA;
+
+      // Smooth GPU timings.
+      for (const k of KEYS) {
+        const v = sim.gpuTimings[k];
+        if (v != null)
+          smoothGpu[k] = smoothGpu[k] == null ? v : smoothGpu[k] * (1 - T_ALPHA) + v * T_ALPHA;
+      }
+
+      const cpuTotal = KEYS.reduce((s, k) => s + (smoothCpu[k] ?? 0), 0);
+      const gpuTotal = KEYS.reduce((s, k) => s + (smoothGpu[k] ?? 0), 0);
+
+      // Build rows:  label | GPU%  GPUms | CPU%  CPUms
+      const LABEL_W = 16;
+      const VAL_W = 10;
+      const pad = (s, w) => String(s).padStart(w);
+
+      const rows = [];
+      const gpuHead = sim.timerExt ? '  GPU' : '  GPU (n/a)';
+      const cpuHead = '  CPU';
+      if (showGpu && showCpu)
+        rows.push(' '.repeat(LABEL_W) + gpuHead.padEnd(VAL_W + 2) + cpuHead);
+      else if (showGpu)
+        rows.push(gpuHead);
+      else
+        rows.push(cpuHead);
+
+      for (const k of KEYS) {
+        const label = {constants:'constants',mice:'mice',advection:'advection',
+          diffusion:'diffusion',forces:'forces',thermodynamics:'thermodynamics',
+          incompressibility:'pressure',visualization:'visualization'}[k];
+        let row = '  ' + label.padEnd(LABEL_W);
+        if (showGpu) {
+          const pct = gpuTotal > 0 ? (smoothGpu[k] ?? 0) / gpuTotal * 100 : 0;
+          row += ' ' + pad(pct.toFixed(1), 5) + '%';
+        }
+        if (showCpu) {
+          const pct = cpuTotal > 0 ? (smoothCpu[k] ?? 0) / cpuTotal * 100 : 0;
+          row += ' ' + pad(pct.toFixed(1), 5) + '%';
+        }
+        rows.push(row);
+      }
+
+      rows.push('  ' + '─'.repeat(showGpu && showCpu ? LABEL_W + 20 : LABEL_W + 8));
+      {
+        let row = '  ' + 'cdf calc (cpu)'.padEnd(LABEL_W);
+        if (showGpu) row += '     -';
+        if (showCpu) row += ' ' + (smoothCpu.cdf ?? 0).toFixed(3) + 'ms';
+        rows.push(row);
+      }
+
+      timingEl.textContent = rows.join('\n');
+    }
+
+    let cdfFrame = 0;
+    sim.on_render = () => {
+      updateTimingDisplay();
+      if (guiparams.show_cdf && ++cdfFrame % 5 === 0) updateVelCDF();
+    };
+
+    drawCDF();
+</script>
 </html>
